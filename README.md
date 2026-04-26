@@ -129,6 +129,14 @@ Performance metrics used:
 
 ---
 
+###7. Visualization Module
+
+* Displays prediction results on a sample chest X-ray image
+* Compares outputs of all three models
+* Plots graph comparing evaluation metrics
+
+---
+
 ## 🛠️ Technologies Used
 
 * Programming Language: Python
@@ -180,6 +188,39 @@ Self-Supervised Results: (Accuracy, Precision, Recall, F1, ROC-AUC)
 
 ---
 
+## 📊 Additional Output (Visualization)
+
+### 1. Sample Image Prediction
+
+The system takes a sample chest X-ray image and predicts the class using all three models:
+
+Fully Supervised Model
+Transfer Learning Model
+Self-Supervised Model
+
+Example:
+FS: Normal | TL: Pneumonia | SSL: Pneumonia
+
+### 2. Visualization of Predictions
+Displays the chest X-ray image
+Shows predictions of all three models in the title
+Helps visually compare model outputs
+
+### 3. Evaluation Metrics Visualization
+* Graph comparing:
+    * Accuracy
+    * Precision
+    * Recall
+    * F1 Score
+    * ROC-AUC
+* Comparison across:
+    * Fully Supervised
+    * Transfer Learning
+    * Self-Supervised
+ 
+  ---
+
+  
 ## 📌 Conclusion
 
 This project demonstrates that **self-supervised learning improves feature extraction** by leveraging unlabeled data. It is especially useful in medical imaging, where labeled data is limited and expensive to obtain.
