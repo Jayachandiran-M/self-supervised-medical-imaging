@@ -1,0 +1,184 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torchvision import datasets, transforms
+from torchvision.models import resnet18, ResNet18_Weights
+from torch.utils.data import DataLoader
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+import torch.nn.functional as F
+from tqdm import tqdm
+import os
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+BATCH_SIZE = 16
+IMG_SIZE = 128
+
+EPOCHS_SSL = 6
+EPOCHS_FT = 2
+
+data_path = "D:/Downloads/data" 
+class SimCLRAugmentation:
+    def __init__(self):
+        self.transform = transforms.Compose([
+            transforms.RandomResizedCrop(IMG_SIZE),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomRotation(10),
+            transforms.ColorJitter(0.3,0.3,0.3,0.1),
+            transforms.ToTensor()
+        ])
+
+    def __call__(self, x):
+        return self.transform(x), self.transform(x)
+
+basic_transform = transforms.Compose([
+    transforms.Resize((IMG_SIZE, IMG_SIZE)),
+    transforms.ToTensor()
+])
+unlabeled_dataset = datasets.ImageFolder(
+    os.path.join(data_path, "unlabeled"),
+    transform=SimCLRAugmentation()
+)
+
+train_dataset = datasets.ImageFolder(
+    os.path.join(data_path, "labeled/train"),
+    transform=basic_transform
+)
+
+val_dataset = datasets.ImageFolder(
+    os.path.join(data_path, "labeled/val"),
+    transform=basic_transform
+)
+
+unlabeled_loader = DataLoader(unlabeled_dataset, batch_size=BATCH_SIZE, shuffle=True)
+train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE)
+class SimCLR(nn.Module):
+    def __init__(self):
+        super().__init__()
+        base = resnet18(weights=ResNet18_Weights.DEFAULT)
+        self.encoder = base
+        self.encoder.fc = nn.Identity()
+
+        self.projector = nn.Sequential(
+            nn.Linear(512, 128),
+            nn.ReLU(),
+            nn.Linear(128, 64)
+        )
+
+    def forward(self, x):
+        return self.projector(self.encoder(x))
+def contrastive_loss(z1, z2):
+    return ((z1 - z2) ** 2).mean()
+ssl_model = SimCLR().to(device)
+optimizer = optim.Adam(ssl_model.parameters(), lr=1e-3)
+
+for epoch in range(EPOCHS_SSL):
+    ssl_model.train()
+    total_loss = 0
+
+    for (x1, x2), _ in tqdm(unlabeled_loader):
+        x1, x2 = x1.to(device), x2.to(device)
+
+        z1 = ssl_model(x1)
+        z2 = ssl_model(x2)
+
+        loss = contrastive_loss(z1, z2)
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+
+    print(f"SSL Epoch {epoch+1}, Loss: {total_loss:.4f}")
+def evaluate(model):
+    model.eval()
+    y_true, y_pred, probs = [], [], []
+
+    with torch.no_grad():
+        for images, labels in val_loader:
+            images = images.to(device)
+
+            outputs = model(images)
+            prob = F.softmax(outputs, dim=1)
+
+            preds = torch.argmax(outputs, dim=1).cpu().numpy()
+
+            y_pred.extend(preds)
+            y_true.extend(labels.numpy())
+            probs.extend(prob.cpu().numpy())
+
+    acc = accuracy_score(y_true, y_pred)
+    prec = precision_score(y_true, y_pred, average='weighted', zero_division=0)
+    rec = recall_score(y_true, y_pred, average='weighted', zero_division=0)
+    f1 = f1_score(y_true, y_pred, average='weighted', zero_division=0)
+
+    try:
+        if len(set(y_true)) == 2:
+            # Binary case
+            roc = roc_auc_score(y_true, [p[1] for p in probs])
+        else:
+            # Multi-class
+            roc = roc_auc_score(y_true, probs, multi_class='ovr')
+    except:
+        roc = 0.0  
+
+    return acc, prec, rec, f1, roc
+model_fs = resnet18(weights=None)
+model_fs.fc = nn.Linear(512, len(train_dataset.classes))
+model_fs = model_fs.to(device)
+
+optimizer = optim.Adam(model_fs.parameters(), lr=1e-3)
+criterion = nn.CrossEntropyLoss()
+
+for epoch in range(EPOCHS_FT):
+    model_fs.train()
+    for images, labels in train_loader:
+        images, labels = images.to(device), labels.to(device)
+
+        outputs = model_fs(images)
+        loss = criterion(outputs, labels)
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+print("Fully Supervised Results:", evaluate(model_fs))
+model_tl = resnet18(weights=ResNet18_Weights.DEFAULT)
+model_tl.fc = nn.Linear(512, len(train_dataset.classes))
+model_tl = model_tl.to(device)
+
+optimizer = optim.Adam(model_tl.parameters(), lr=1e-3)
+
+for epoch in range(EPOCHS_FT):
+    model_tl.train()
+    for images, labels in train_loader:
+        images, labels = images.to(device), labels.to(device)
+
+        outputs = model_tl(images)
+        loss = criterion(outputs, labels)
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+print("Transfer Learning Results:", evaluate(model_tl))
+model_ssl = ssl_model.encoder
+model_ssl.fc = nn.Linear(512, len(train_dataset.classes))
+model_ssl = model_ssl.to(device)
+
+optimizer = optim.Adam(model_ssl.parameters(), lr=1e-3)
+
+for epoch in range(EPOCHS_FT):
+    model_ssl.train()
+    for images, labels in train_loader:
+        images, labels = images.to(device), labels.to(device)
+
+        outputs = model_ssl(images)
+        loss = criterion(outputs, labels)
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+print("Self-Supervised Results:", evaluate(model_ssl))
