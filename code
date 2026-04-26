@@ -8,15 +8,18 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 import torch.nn.functional as F
 from tqdm import tqdm
 import os
-device = "cuda" if torch.cuda.is_available() else "cpu"
+import matplotlib.pyplot as plt
+from PIL import Image
 
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print("Device:", device)
 BATCH_SIZE = 16
 IMG_SIZE = 128
 
 EPOCHS_SSL = 6
 EPOCHS_FT = 2
 
-data_path = "D:/Downloads/data" 
+data_path = "D:/Downloads/data"
 class SimCLRAugmentation:
     def __init__(self):
         self.transform = transforms.Compose([
@@ -52,6 +55,8 @@ val_dataset = datasets.ImageFolder(
 unlabeled_loader = DataLoader(unlabeled_dataset, batch_size=BATCH_SIZE, shuffle=True)
 train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
 val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE)
+
+print("Classes:", train_dataset.classes)
 class SimCLR(nn.Module):
     def __init__(self):
         super().__init__()
@@ -67,6 +72,7 @@ class SimCLR(nn.Module):
 
     def forward(self, x):
         return self.projector(self.encoder(x))
+
 def contrastive_loss(z1, z2):
     return ((z1 - z2) ** 2).mean()
 ssl_model = SimCLR().to(device)
@@ -115,10 +121,8 @@ def evaluate(model):
 
     try:
         if len(set(y_true)) == 2:
-            # Binary case
             roc = roc_auc_score(y_true, [p[1] for p in probs])
         else:
-            # Multi-class
             roc = roc_auc_score(y_true, probs, multi_class='ovr')
     except:
         roc = 0.0  
@@ -143,7 +147,8 @@ for epoch in range(EPOCHS_FT):
         loss.backward()
         optimizer.step()
 
-print("Fully Supervised Results:", evaluate(model_fs))
+fs_metrics = evaluate(model_fs)
+print("Fully Supervised:", fs_metrics)
 model_tl = resnet18(weights=ResNet18_Weights.DEFAULT)
 model_tl.fc = nn.Linear(512, len(train_dataset.classes))
 model_tl = model_tl.to(device)
@@ -162,7 +167,8 @@ for epoch in range(EPOCHS_FT):
         loss.backward()
         optimizer.step()
 
-print("Transfer Learning Results:", evaluate(model_tl))
+tl_metrics = evaluate(model_tl)
+print("Transfer Learning:", tl_metrics)
 model_ssl = ssl_model.encoder
 model_ssl.fc = nn.Linear(512, len(train_dataset.classes))
 model_ssl = model_ssl.to(device)
@@ -181,4 +187,49 @@ for epoch in range(EPOCHS_FT):
         loss.backward()
         optimizer.step()
 
-print("Self-Supervised Results:", evaluate(model_ssl))
+ssl_metrics = evaluate(model_ssl)
+print("Self-Supervised:", ssl_metrics)
+def predict_image(model, image_path):
+    model.eval()
+    img = Image.open(image_path).convert("RGB")
+    img_t = basic_transform(img).unsqueeze(0).to(device)
+
+    with torch.no_grad():
+        output = model(img_t)
+        pred = torch.argmax(output, dim=1).item()
+
+    return train_dataset.classes[pred]
+
+def show_predictions(image_path):
+    img = Image.open(image_path)
+
+    fs_pred = predict_image(model_fs, image_path)
+    tl_pred = predict_image(model_tl, image_path)
+    ssl_pred = predict_image(model_ssl, image_path)
+
+    plt.imshow(img)
+    plt.title(f"FS: {fs_pred} | TL: {tl_pred} | SSL: {ssl_pred}")
+    plt.axis("off")
+    plt.show()
+
+sample_image = os.path.join(data_path, "D:/Downloads/data/labeled/val/NORMAL/IM-0166-0001.jpeg")
+show_predictions(sample_image)
+def plot_metrics():
+    labels = ['Accuracy', 'Precision', 'Recall', 'F1', 'ROC']
+    fs = list(fs_metrics)
+    tl = list(tl_metrics)
+    ssl = list(ssl_metrics)
+
+    x = range(len(labels))
+
+    plt.figure()
+    plt.plot(x, fs, marker='o', label="Fully Supervised")
+    plt.plot(x, tl, marker='o', label="Transfer Learning")
+    plt.plot(x, ssl, marker='o', label="Self-Supervised")
+
+    plt.xticks(x, labels)
+    plt.title("Model Comparison")
+    plt.legend()
+    plt.show()
+
+plot_metrics()
